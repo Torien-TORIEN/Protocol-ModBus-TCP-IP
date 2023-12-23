@@ -1,0 +1,9 @@
+import socket as socket
+
+MODBUS_SERVER_IP = "192.168.56.1"
+MODBUS_SERVER_PORT = 502
+ID_TRANSACTION = 0x1234
+ID_SERVER = 0xBB
+MAX_BUFFER = 2048
+
+MODBUS_SOCKET = socket.socket()

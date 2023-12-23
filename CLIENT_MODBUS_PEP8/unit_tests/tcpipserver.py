@@ -1,0 +1,109 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import socket as socket
+import threading as thread
+import _thread as th
+from sys import platform
+
+BUFF = 1024
+
+
+class TCPIPServer(thread.Thread):
+    def __init__(self, modbus_server):
+        thread.Thread.__init__(self)
+        self.port = 5020
+        self.isstarted = False
+        self.serversocket = socket.socket()
+        self.hostname = "no ip"
+        self.callback = None
+        self._stop_event = thread.Event()
+        self.modbus = modbus_server
+
+    def start_server(self):
+        self.start()
+
+    def set_port(self, port):
+        self.port = port
+
+    def run(self):
+        try:
+            self.serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if platform == "linux" or platform == "linux2":
+                self.serversocket.setblocking(False)
+            self.serversocket.bind((socket.gethostname(), self.port))
+            self.hostname = socket.gethostname()
+            self.serversocket.listen(1)
+        except Exception as e:
+            self.callback("ERR - Error while opening the socket : " + str(e))
+            return
+
+        try:
+            self.callback("waiting for connection... listening on ip " + socket.gethostbyname(socket.gethostname()) +
+                          " and port " + str(self.port))
+            while not self._stop_event.is_set():
+                try:
+                    clientsock, addr = self.serversocket.accept()
+                    self.callback("One client connected!")
+                    th.start_new_thread(self.handler, (clientsock, addr))
+                except socket.error:
+                    self._stop_event.wait(1)
+        except Exception as e:
+            self.callback("ERR - Error in the while loop : " + str(e))
+            return
+
+    @staticmethod
+    def data2str(data):
+        retstr = ""
+        for value in data:
+            retstr += hex(value) + " "
+        return retstr
+
+    def handler(self, clientsock, addr):
+        while 1:
+            data = clientsock.recv(BUFF)
+            if not data:
+                break
+            self.callback("from " + repr(addr) + " received: " + self.data2str(data))
+            if len(data) < 6:
+                self.callback("this is not a ModbusTCPIP frame len(data) too short")
+                return  # this is not a ModbusTCPIP frame
+
+            requestsize = (data[4] << 8) + data[5]
+
+            if requestsize != (len(data)-6) or len(data) < 8 or data[2] != 0x00 or data[3] != 0x00:
+                self.callback("this is not a ModbusTCPIP frame, data is not correct")
+                return
+
+            # we get the PDU (protocol data unit)
+            pdu = []
+            for i in range(0, requestsize-1):
+                pdu.append(data[7+i])
+
+            pdu_response = self.modbus.process_pdu(pdu)
+
+            response = bytearray()
+            response.append(data[0])  # id transaction
+            response.append(data[1])
+            response.append(0x00)  # id protocol
+            response.append(0x00)
+            response.append((len(pdu_response)+1) >> 8)  # taille de la trame
+            response.append((len(pdu_response)+1) & 0x00FF)
+            response.append(data[6])  # id serveur
+            for i in range(0, len(pdu_response)):  # PDU response
+                response.append(pdu_response[i])
+
+            clientsock.sendall(response)
+            self.callback(repr(addr) + " sent: " + self.data2str(response))
+
+            if "close" == data.rstrip():
+                break  # type 'close' on client console to close connection from the server side
+        clientsock.close()
+        self.callback(repr(addr) + "- closed connection")
+
+    def stop_server(self):
+        self._stop_event.set()
+        self.serversocket.close()
+        self.join(10)
+        self.callback("Server is closed (all the threads should be killed)")
+
